@@ -3,7 +3,7 @@ name: Rust Continuous Integration
 # Continuous integration for the Fedimint-client-uniffi.
 # Builds, tests, and runs clippy linting on the Rust code.
 # Ensures code formatting follows project standards using rustfmt.
-# Runs on changes to bdk-ffi directory on pushes and pull requests.
+# Runs on changes to fedimint-client-uniffi directory on pushes and pull requests.
 
 on:
   push:
