@@ -4,9 +4,22 @@ use fedimint_client_rpc::{RpcGlobalState, RpcRequest, RpcResponse, RpcResponseHa
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::db::Database;
 
+// Force the linker to pull in our strong sdallocx stub from sdallocx_stub.c.
+// On Android, aws-lc declares sdallocx as a weak symbol. The Android linker
+// resolves weak GLOB_DAT entries to the PLT stub (non-NULL) while JUMP_SLOT
+// stays 0 → SIGSEGV. Our stub provides a strong definition that delegates to free().
+#[cfg(target_os = "android")]
+extern "C" {
+    fn sdallocx(ptr: *mut std::ffi::c_void, size: usize, flags: i32);
+}
+
+#[cfg(target_os = "android")]
+#[used]
+static FORCE_SDALLOCX: unsafe extern "C" fn(*mut std::ffi::c_void, usize, i32) = sdallocx;
+
 uniffi::setup_scaffolding!();
 
-const DB_FILE_NAME: &str = "fedimint.redb";
+const DB_DIR_NAME: &str = "fedimint_db";
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum FedimintError {
@@ -93,7 +106,7 @@ impl RpcResponseHandler for CallbackWrapper {
 async fn create_database(path: &str) -> anyhow::Result<Database> {
     tokio::fs::create_dir_all(path).await?;
 
-    let db_path = std::path::Path::new(path).join(DB_FILE_NAME);
+    let db_path = std::path::Path::new(path).join(DB_DIR_NAME);
     let db = fedimint_rocksdb::RocksDb::build(db_path).open().await?;
 
     Ok(Database::new(db, Default::default()))

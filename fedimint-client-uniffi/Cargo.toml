@@ -19,6 +19,10 @@ path = "uniffi-bindgen.rs"
 
 [dependencies]
 anyhow = "1.0.98"
+# Pin aws-lc-rs to 1.15.1 / aws-lc-sys to 0.34.0 (same as Fedi).
+# aws-lc-sys v0.35.0 introduced a jitter entropy init bug: SIGSEGV on
+# aarch64-android via aws_lc_0_35_0_tree_jitter_initialize → pthread_once → [anon:.bss]
+aws-lc-rs = { version = "=1.15.1" }
 fedimint-client-rpc = { version = "0.10.0" }
 fedimint-connectors = { version = "0.10.0" }
 fedimint-core = { version = "0.10.0" }
@@ -32,6 +36,7 @@ tokio = "1.48.0"
 uniffi = { version = "0.29", features = ["cli"] }
 
 [build-dependencies]
+cc = "1"
 fedimint-build = { version= "0.10.0" }
 uniffi = { version = "0.29", features = ["build"] }
 
