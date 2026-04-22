@@ -1,6 +1,6 @@
 [package]
 name = "fedimint-client-uniffi"
-version = "0.1.0"
+version = "0.11.1"
 edition = "2021"
 license = "MIT"
 authors = ["The Fedimint Developers"]
@@ -23,11 +23,11 @@ anyhow = "1.0.98"
 # aws-lc-sys v0.35.0 introduced a jitter entropy init bug: SIGSEGV on
 # aarch64-android via aws_lc_0_35_0_tree_jitter_initialize → pthread_once → [anon:.bss]
 aws-lc-rs = { version = "=1.15.1" }
-fedimint-client-rpc = { version = "0.10.0" }
-fedimint-connectors = { version = "0.10.0" }
-fedimint-core = { version = "0.10.0" }
-fedimint-db-locked = { version = "0.10.0" }
-fedimint-rocksdb = { version = "0.10.0" }
+fedimint-client-rpc = { version = "0.11.1" }
+fedimint-connectors = { version = "0.11.1" }
+fedimint-core = { version = "0.11.1" }
+fedimint-db-locked = { version = "0.11.1" }
+fedimint-rocksdb = { version = "0.11.1" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.141"
 socket2 = { version = "0.5.7", features = ["all"] }
@@ -37,7 +37,7 @@ uniffi = { version = "0.29", features = ["cli"] }
 
 [build-dependencies]
 cc = "1"
-fedimint-build = { version= "0.10.0" }
+fedimint-build = { version= "0.11.1" }
 uniffi = { version = "0.29", features = ["build"] }
 
 [profile.release]
