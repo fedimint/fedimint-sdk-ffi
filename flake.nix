@@ -229,6 +229,15 @@
           CC = "/usr/bin/clang";
           CXX = "/usr/bin/clang++";
           AR = "/usr/bin/ar";
+          # Build scripts (build.rs binaries) are compiled and linked for the
+          # darwin host arch. On macOS 14+ libiconv ships only inside the
+          # Apple SDKs (not /usr/lib), so a bare `cc -liconv` from the Nix
+          # sandbox can't find it. Add Nix's libiconv to RUSTFLAGS for the
+          # darwin host targets only -- iOS cross-compile targets must NOT
+          # see this lib path because Nix's libiconv is darwin Mach-O and
+          # would mismatch the iOS arch.
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = "-L${pkgs.libiconv}/lib";
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS = "-L${pkgs.libiconv}/lib";
           # Per-target compilers route through xcrun (set in preBuild below).
           # See iosShellHook in fedimint-sdk's flake.nix for the original recipe.
           preBuild = ''
