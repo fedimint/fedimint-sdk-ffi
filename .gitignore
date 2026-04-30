@@ -2,6 +2,10 @@
 target
 build
 
+# Nix
+result
+result-*
+
 # Kotlin related
 .gradle
 wallet_db
