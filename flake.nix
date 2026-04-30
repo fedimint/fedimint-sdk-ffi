@@ -2,13 +2,21 @@
   description = "Fedimint SDK FFI - uniffi bindings for fedimint-client";
 
   inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    crane.url = "github:ipetkov/crane";
+    flakebox = {
+      url = "github:rustshop/flakebox";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
+    };
+    android-nixpkgs = {
+      url = "github:tadfisher/android-nixpkgs/stable";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -17,7 +25,8 @@
       nixpkgs,
       flake-utils,
       fenix,
-      crane,
+      flakebox,
+      android-nixpkgs,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -29,18 +38,66 @@
             android_sdk.accept_license = true;
           };
         };
+        lib = pkgs.lib;
+        stdenv = pkgs.stdenv;
 
-        fenixPkgs = fenix.packages.${system};
-        baseToolchain = fenixPkgs.stable.toolchain;
+        # Android SDK + NDK 27.1 (matching what fedimint-sdk's dev shell uses).
+        androidSdk = android-nixpkgs.sdk."${system}" (
+          sdkPkgs: with sdkPkgs; [
+            cmdline-tools-latest
+            build-tools-36-0-0
+            platform-tools
+            platforms-android-36
+            ndk-27-1-12297006
+          ]
+        );
 
-        mkToolchain =
-          targets:
-          fenixPkgs.combine ([ baseToolchain ] ++ map (t: fenixPkgs.targets.${t}.stable.rust-std) targets);
+        flakeboxLib = flakebox.lib.mkLib pkgs {
+          config = {
+            toolchain.channel = "stable";
+            github.ci.enable = false;
+            typos.pre-commit.enable = false;
+          };
+        };
+
+        # `mkStdTargets` provides target descriptors (mkIOSTarget for ios-*,
+        # mkAndroidTarget for android-*, etc.) that wire up the right
+        # CC/AR/LINKER/RUSTFLAGS env vars per cargo target triple.
+        # Each entry is a lambda; calling it with `{}` materialises
+        # `{ args, componentTargets }`.
+        stdTargets = flakeboxLib.mkStdTargets {
+          inherit androidSdk;
+        };
+
+        # Fenix toolchain combining all the cross-compile std libraries we
+        # need (host + android + ios on darwin).
+        toolchain = flakeboxLib.mkFenixToolchain {
+          components = [
+            "rustc"
+            "cargo"
+            "rust-src"
+          ];
+          targets = lib.getAttrs (
+            [
+              "default"
+              "aarch64-android"
+              "armv7-android"
+              "i686-android"
+              "x86_64-android"
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              "aarch64-ios"
+              "aarch64-ios-sim"
+              "x86_64-ios"
+            ]
+          ) stdTargets;
+        };
+
+        craneLib = toolchain.craneLib;
 
         # Keep .c, .toml (uniffi.toml, uniffi-android.toml), and .udl alongside
         # Rust sources. craneLib.cleanCargoSource on its own would strip these.
-        mkSrc =
-          craneLib:
+        src =
           let
             crateDir = ./fedimint-client-uniffi;
             keepExtras =
@@ -51,247 +108,155 @@
               base == "sdallocx_stub.c"
               || base == "uniffi.toml"
               || base == "uniffi-android.toml"
-              || pkgs.lib.hasSuffix ".udl" path;
+              || lib.hasSuffix ".udl" path;
             filter = path: type: (keepExtras path type) || (craneLib.filterCargoSources path type);
           in
-          pkgs.lib.cleanSourceWith {
+          lib.cleanSourceWith {
             src = crateDir;
             inherit filter;
             name = "source";
           };
 
-        # Convert `aarch64-linux-android` -> `AARCH64_LINUX_ANDROID` (cargo env-var form)
-        upperUnderscore = t: pkgs.lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] t);
-        # Convert `aarch64-linux-android` -> `aarch64_linux_android` (cc/bindgen env-var form)
-        lowerUnderscore = t: builtins.replaceStrings [ "-" ] [ "_" ] t;
+        # Symlink-only derivation that exposes /usr/bin/* and the
+        # Xcode.app dirs to the Nix build sandbox. Same pattern fedi uses
+        # for their `nix develop .#xcode` shell. `__noChroot = true` so
+        # the symlink targets are accessible at build time; this requires
+        # the Nix daemon to allow relaxed sandboxing
+        # (`sandbox = relaxed` in nix.conf or `--option sandbox relaxed`).
+        xcode-wrapper = pkgs.runCommand "xcode-wrapper-impure" { __noChroot = true; } ''
+          mkdir -p $out/bin
+          ln -s /usr/bin/ld $out/bin/ld
+          ln -s /usr/bin/clang $out/bin/clang
+          ln -s /usr/bin/clang++ $out/bin/clang++
+          ln -s /usr/bin/cc $out/bin/cc
+          ln -s /usr/bin/c++ $out/bin/c++
+          ln -s /usr/bin/ar $out/bin/ar
+          ln -s /usr/bin/xcrun $out/bin/xcrun
+          ln -s /usr/bin/xcode-select $out/bin/xcode-select
+          ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
+        '';
+
+        # Build the crate for a single (rustTarget, targetKey) pair.
+        # `targetKey` is the flakebox-stdTargets key (e.g. `aarch64-ios`),
+        # `rustTarget` is the Cargo triple (e.g. `aarch64-apple-ios`).
+        buildOne =
+          {
+            targetKey,
+            rustTarget,
+            isIos ? false,
+          }:
+          let
+            target = stdTargets.${targetKey} { };
+          in
+          craneLib.buildPackage (
+            target.args
+            // (lib.optionalAttrs stdenv.isDarwin {
+              # nixpkgs' stdenv walks `buildInputs` and adds each `/lib` to
+              # the cc-wrapper's NIX_LDFLAGS. Putting libiconv here is what
+              # makes `cc -liconv` resolve in the host build-script link
+              # step on macOS 14+ (where iconv lives only in the Apple SDK).
+              # iOS cross-compile linker invocations also see this path but
+              # harmlessly skip the wrong-arch Mach-O lib (with a warning)
+              # and resolve via the SDK paths supplied by mkIOSTarget.
+              buildInputs = [ pkgs.libiconv ];
+            })
+            // (lib.optionalAttrs isIos {
+              # iOS cross-compile reads /Applications/Xcode.app and /usr/bin
+              # via the xcode-wrapper symlinks; this requires relaxed
+              # sandboxing.
+              __noChroot = true;
+              IPHONEOS_DEPLOYMENT_TARGET = "15.0";
+              MACOSX_DEPLOYMENT_TARGET = "15.0";
+            })
+            // {
+              inherit src;
+              pname = "fedimint-client-uniffi-${rustTarget}";
+              version = "0.1.0";
+              cargoExtraArgs = "--locked --target ${rustTarget} --lib";
+              CARGO_BUILD_TARGET = rustTarget;
+              doCheck = false;
+              strictDeps = true;
+              # rocksdb needs cmake; aws-lc-sys needs cmake + perl + go.
+              # python3 is needed by some ring/aws-lc generation scripts.
+              nativeBuildInputs =
+                (target.args.nativeBuildInputs or [ ])
+                ++ [
+                  pkgs.cmake
+                  pkgs.pkg-config
+                  pkgs.perl
+                  pkgs.python3
+                  pkgs.go
+                ]
+                ++ lib.optionals isIos [ xcode-wrapper ];
+            }
+          );
 
         ##############
         # Android
         ##############
 
-        ndkVersion = "27.1.12297006";
-
-        androidSdk = pkgs.androidenv.composeAndroidPackages {
-          includeNDK = true;
-          ndkVersions = [ ndkVersion ];
-          buildToolsVersions = [ "36.0.0" ];
-          platformVersions = [ "36" ];
-          abiVersions = [
-            "arm64-v8a"
-            "x86_64"
-          ];
-          cmdLineToolsVersion = "13.0";
-          toolsVersion = "26.1.1";
-          includeSystemImages = true;
-        };
-
-        ndkRoot = "${androidSdk.androidsdk}/libexec/android-sdk/ndk/${ndkVersion}";
-        hostTag =
-          if pkgs.stdenv.isDarwin then
-            (if pkgs.stdenv.isAarch64 then "darwin-arm64" else "darwin-x86_64")
-          else
-            "linux-x86_64";
-        ndkToolchain = "${ndkRoot}/toolchains/llvm/prebuilt/${hostTag}";
-
-        androidRustTargets = [
-          "aarch64-linux-android"
-          "armv7-linux-androideabi"
-          "i686-linux-android"
-          "x86_64-linux-android"
-        ];
-
-        androidToolchain = mkToolchain androidRustTargets;
-        androidCraneLib = (crane.mkLib pkgs).overrideToolchain androidToolchain;
-        androidSrc = mkSrc androidCraneLib;
-
-        androidApiLevel = "24";
-
-        # NDK clang is invoked as `<triple><api>-clang`. The armv7 rust target
-        # `armv7-linux-androideabi` maps to NDK triple `armv7a-linux-androideabi`.
-        ndkClangFor =
-          rustTarget:
-          let
-            ndkTriple =
-              if rustTarget == "armv7-linux-androideabi" then "armv7a-linux-androideabi" else rustTarget;
-          in
-          "${ndkToolchain}/bin/${ndkTriple}${androidApiLevel}-clang";
-        ndkClangxxFor = rustTarget: "${ndkClangFor rustTarget}++";
-
-        androidBindgenArgs = ''--sysroot=${ndkToolchain}/sysroot -I${ndkToolchain}/sysroot/usr/include'';
-
-        androidCommonEnv = {
-          ANDROID_NDK_ROOT = ndkRoot;
-          ANDROID_NDK_HOME = ndkRoot;
-          NDK_HOME = ndkRoot;
-          ROCKSDB_STATIC = "1";
-          SNAPPY_STATIC = "1";
-          LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-          CLANG_PATH = "${ndkToolchain}/bin/clang";
-        };
-
-        androidPerTargetEnv =
-          rustTarget:
-          let
-            U = upperUnderscore rustTarget;
-            l = lowerUnderscore rustTarget;
-            cc = ndkClangFor rustTarget;
-          in
-          {
-            "CARGO_TARGET_${U}_LINKER" = cc;
-            "CARGO_TARGET_${U}_AR" = "${ndkToolchain}/bin/llvm-ar";
-            "CC_${l}" = cc;
-            "CXX_${l}" = ndkClangxxFor rustTarget;
-            "AR_${l}" = "${ndkToolchain}/bin/llvm-ar";
-            "RANLIB_${l}" = "${ndkToolchain}/bin/llvm-ranlib";
-            "BINDGEN_EXTRA_CLANG_ARGS_${l}" = androidBindgenArgs;
-          };
-
-        buildAndroidTarget =
-          rustTarget:
-          androidCraneLib.buildPackage (
-            androidCommonEnv
-            // (androidPerTargetEnv rustTarget)
-            // {
-              src = androidSrc;
-              pname = "fedimint-client-uniffi-${rustTarget}";
-              version = "0.1.0";
-              cargoExtraArgs = "--locked --target ${rustTarget} --lib";
-              CARGO_BUILD_TARGET = rustTarget;
-              doCheck = false;
-              strictDeps = true;
-              nativeBuildInputs = [
-                pkgs.cmake
-                pkgs.pkg-config
-                pkgs.perl
-                pkgs.python3
-                pkgs.libclang
-                pkgs.go
-              ];
-            }
-          );
-
-        # Map rust target -> Android ABI dir
-        androidAbiOf = rustTarget:
-          {
-            "aarch64-linux-android" = "arm64-v8a";
-            "armv7-linux-androideabi" = "armeabi-v7a";
-            "i686-linux-android" = "x86";
-            "x86_64-linux-android" = "x86_64";
-          }
-          .${rustTarget};
-
-        # Targets we actually ship (matches ubrn.config.yaml). The fenix
-        # toolchain has all four wired so adding more is one line below.
+        # Targets we actually ship .so files for (matches ubrn.config.yaml
+        # in fedimint-sdk). The toolchain has more wired up so adding more
+        # is one entry per row below.
         androidShipped = [
-          "aarch64-linux-android"
-          "x86_64-linux-android"
+          {
+            targetKey = "aarch64-android";
+            rustTarget = "aarch64-linux-android";
+            abi = "arm64-v8a";
+          }
+          {
+            targetKey = "x86_64-android";
+            rustTarget = "x86_64-linux-android";
+            abi = "x86_64";
+          }
         ];
 
-        androidPerTargetBuilds = pkgs.lib.genAttrs androidShipped buildAndroidTarget;
+        androidPerTargetBuilds = lib.listToAttrs (
+          map (t: lib.nameValuePair t.rustTarget (buildOne {
+            inherit (t) targetKey rustTarget;
+          })) androidShipped
+        );
 
         androidJniLibs = pkgs.runCommand "fedimint-uniffi-android-jniLibs" { } ''
           mkdir -p $out/jniLibs
-          ${pkgs.lib.concatMapStringsSep "\n" (t: ''
-            mkdir -p $out/jniLibs/${androidAbiOf t}
-            cp ${androidPerTargetBuilds.${t}}/lib/libfedimint_client_uniffi.so $out/jniLibs/${androidAbiOf t}/
+          ${lib.concatMapStringsSep "\n" (t: ''
+            mkdir -p $out/jniLibs/${t.abi}
+            cp ${androidPerTargetBuilds.${t.rustTarget}}/lib/libfedimint_client_uniffi.so \
+               $out/jniLibs/${t.abi}/
           '') androidShipped}
         '';
 
         ##############
         # iOS (darwin only)
-        #
-        # iOS builds require Apple SDKs and Xcode, which Nix cannot redistribute.
-        # We mark the derivations `__noChroot = true` so they can read
-        # /usr/bin/* and /Applications/Xcode.app from the host. This requires
-        # the Nix daemon to allow relaxed sandboxing
-        # (`sandbox = relaxed` in nix.conf, or building with
-        # `--option sandbox relaxed`). The same pattern is used by the
-        # `xcode-wrapper` derivation in fedimint-sdk's flake.nix.
         ##############
 
-        iosRustTargets = [
-          "aarch64-apple-ios"
-          "aarch64-apple-ios-sim"
-          "x86_64-apple-ios"
+        iosShipped = [
+          {
+            targetKey = "aarch64-ios";
+            rustTarget = "aarch64-apple-ios";
+          }
+          {
+            targetKey = "aarch64-ios-sim";
+            rustTarget = "aarch64-apple-ios-sim";
+          }
+          {
+            targetKey = "x86_64-ios";
+            rustTarget = "x86_64-apple-ios";
+          }
         ];
 
-        iosToolchain = mkToolchain iosRustTargets;
-        iosCraneLib = (crane.mkLib pkgs).overrideToolchain iosToolchain;
-        iosSrc = mkSrc iosCraneLib;
-
-        # Shared impure-build env. xcrun is invoked at build time to discover
-        # the iPhoneOS / iPhoneSimulator SDK paths so bindgen can find headers.
-        iosCommonEnv = {
-          __noChroot = true;
-          IPHONEOS_DEPLOYMENT_TARGET = "15.0";
-          MACOSX_DEPLOYMENT_TARGET = "15.0";
-          # Force aws-lc-sys / cc-rs to use system clang, never any Homebrew LLVM.
-          CC = "/usr/bin/clang";
-          CXX = "/usr/bin/clang++";
-          AR = "/usr/bin/ar";
-          # Build scripts (build.rs binaries) are compiled and linked for the
-          # darwin host arch. On macOS 14+ libiconv ships only inside the
-          # Apple SDKs (not /usr/lib), so a bare `cc -liconv` from the Nix
-          # sandbox can't find it. Add Nix's libiconv to RUSTFLAGS for the
-          # darwin host targets only -- iOS cross-compile targets must NOT
-          # see this lib path because Nix's libiconv is darwin Mach-O and
-          # would mismatch the iOS arch.
-          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = "-L${pkgs.libiconv}/lib";
-          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS = "-L${pkgs.libiconv}/lib";
-          # Per-target compilers route through xcrun (set in preBuild below).
-          # See iosShellHook in fedimint-sdk's flake.nix for the original recipe.
-          preBuild = ''
-            export PATH=/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH
-            export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-            export CLANG_PATH="$(xcrun --find clang)"
-
-            IOS_SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
-            SIM_SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-
-            export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$IOS_SDKROOT"
-            export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="--sysroot=$SIM_SDKROOT"
-            # aws-lc-sys bundles an older bindgen that passes
-            # "aarch64-apple-ios-sim" to clang, but clang expects
-            # "aarch64-apple-ios-simulator". Override the target explicitly.
-            # See: https://github.com/rust-lang/rust-bindgen/pull/3182
-            export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--sysroot=$SIM_SDKROOT --target=arm64-apple-ios-simulator"
-
-            # Per-target CC/CXX so cc-rs invokes the right compiler driver.
-            for t in aarch64_apple_ios aarch64_apple_ios_sim x86_64_apple_ios; do
-              eval "export CC_$t=/usr/bin/clang"
-              eval "export CXX_$t=/usr/bin/clang++"
-            done
-          '';
-        };
-
-        buildIosTarget =
-          rustTarget:
-          iosCraneLib.buildPackage (
-            iosCommonEnv
-            // {
-              src = iosSrc;
-              pname = "fedimint-client-uniffi-${rustTarget}";
-              version = "0.1.0";
-              cargoExtraArgs = "--locked --target ${rustTarget} --lib";
-              CARGO_BUILD_TARGET = rustTarget;
-              doCheck = false;
-              strictDeps = true;
-              nativeBuildInputs = [
-                pkgs.cmake
-                pkgs.perl
-                pkgs.python3
-                pkgs.go
-              ];
-            }
-          );
-
-        iosPerTargetBuilds = pkgs.lib.genAttrs iosRustTargets buildIosTarget;
+        iosPerTargetBuilds = lib.listToAttrs (
+          map (t: lib.nameValuePair t.rustTarget (buildOne {
+            inherit (t) targetKey rustTarget;
+            isIos = true;
+          })) iosShipped
+        );
 
         # Layout matches what `xcodebuild -create-xcframework` consumes:
         #   ios-arm64/                      device slice (aarch64-apple-ios)
-        #   ios-arm64_x86_64-simulator/    fat sim slice (aarch64-sim + x86_64-sim)
-        # The xcframework wrap itself stays in ubrn so it can include the
-        # uniffi-generated module map and headers.
+        #   ios-arm64_x86_64-simulator/    fat sim slice (lipo'd)
+        # The xcframework wrap stays in ubrn so the uniffi-generated
+        # module map and headers can be folded in there.
         iosBundle = pkgs.runCommand "fedimint-uniffi-ios-libs" {
           __noChroot = true;
         } ''
@@ -313,19 +278,16 @@
           {
             androidBundle = androidJniLibs;
           }
-          // pkgs.lib.mapAttrs' (t: drv: pkgs.lib.nameValuePair "android-${t}" drv) androidPerTargetBuilds
-          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin (
-            {
-              iosBundle = iosBundle;
-            }
-            // pkgs.lib.mapAttrs' (t: drv: pkgs.lib.nameValuePair "ios-${t}" drv) iosPerTargetBuilds
+          // lib.mapAttrs' (t: drv: lib.nameValuePair "android-${t}" drv) androidPerTargetBuilds
+          // lib.optionalAttrs stdenv.isDarwin (
+            { iosBundle = iosBundle; }
+            // lib.mapAttrs' (t: drv: lib.nameValuePair "ios-${t}" drv) iosPerTargetBuilds
           );
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
-            androidToolchain
-            pkgs.cargo-ndk
-            androidSdk.androidsdk
+            toolchain.toolchain
+            androidSdk
           ];
         };
       }
