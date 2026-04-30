@@ -167,6 +167,23 @@
               __noChroot = true;
               IPHONEOS_DEPLOYMENT_TARGET = "15.0";
               MACOSX_DEPLOYMENT_TARGET = "15.0";
+
+              # nixpkgs' darwin stdenv sets SDKROOT to its bundled
+              # apple-sdk-11 (a macOS SDK) and points DEVELOPER_DIR into
+              # the Nix store. When cc-rs's build script runs
+              # `xcrun --sdk iphoneos --show-sdk-path` to find the
+              # iPhoneOS SDK, those Nix-store paths confuse xcrun and it
+              # exits 255. Reset to the real /Applications/Xcode.app so
+              # xcrun resolves SDKs via xcode-select.
+              #
+              # Mirrors fedimint-sdk's iosShellHook + fedi's xcode dev shell.
+              preBuild = ''
+                unset SDKROOT
+                unset NIX_CFLAGS_COMPILE
+                unset NIX_LDFLAGS
+                export PATH=/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH
+                export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+              '';
             })
             // {
               inherit src;
