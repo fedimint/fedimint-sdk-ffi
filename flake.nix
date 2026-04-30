@@ -181,7 +181,11 @@
                 unset SDKROOT
                 unset NIX_CFLAGS_COMPILE
                 unset NIX_LDFLAGS
-                export PATH=/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH
+                # APPEND (not prepend) /usr/bin so xcrun resolves but
+                # bare `tar` still picks up Nix's GNU tar — crane's deps
+                # archive uses GNU-only `--sort=name` and would fail
+                # against macOS's BSD tar.
+                export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
                 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
               '';
             })
@@ -195,9 +199,12 @@
               strictDeps = true;
               # rocksdb needs cmake; aws-lc-sys needs cmake + perl + go.
               # python3 is needed by some ring/aws-lc generation scripts.
+              # gnutar overrides macOS's BSD tar so crane's depsArchive
+              # (`tar --sort=name`) works.
               nativeBuildInputs =
                 (target.args.nativeBuildInputs or [ ])
                 ++ [
+                  pkgs.gnutar
                   pkgs.cmake
                   pkgs.pkg-config
                   pkgs.perl
