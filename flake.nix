@@ -166,7 +166,7 @@
               # sandboxing.
               __noChroot = true;
               IPHONEOS_DEPLOYMENT_TARGET = "15.0";
-              MACOSX_DEPLOYMENT_TARGET = "15.0";
+              MACOSX_DEPLOYMENT_TARGET = "14.0";
 
               # nixpkgs' darwin stdenv sets SDKROOT to its bundled
               # apple-sdk-11 (a macOS SDK) and points DEVELOPER_DIR into
