@@ -178,7 +178,6 @@
               #
               # Mirrors fedimint-sdk's iosShellHook + fedi's xcode dev shell.
               preBuild = ''
-                unset SDKROOT
                 unset NIX_CFLAGS_COMPILE
                 unset NIX_LDFLAGS
                 # APPEND (not prepend) /usr/bin so xcrun resolves but
@@ -187,6 +186,7 @@
                 # against macOS's BSD tar.
                 export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
                 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+                export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
               '';
             })
             // {
