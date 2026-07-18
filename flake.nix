@@ -178,6 +178,7 @@
               #
               # Mirrors fedimint-sdk's iosShellHook + fedi's xcode dev shell.
               preBuild = ''
+                unset SDKROOT
                 unset NIX_CFLAGS_COMPILE
                 unset NIX_LDFLAGS
                 # APPEND (not prepend) /usr/bin so xcrun resolves but
@@ -186,12 +187,14 @@
                 # against macOS's BSD tar.
                 export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
                 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-                # Point SDKROOT to the real Xcode macOS SDK (not Nix's
-                # bundled apple-sdk). This lets the host linker find
-                # libSystem.dylib for build-script compilation, while
-                # iOS target builds safely override via explicit
-                # -isysroot flags from flakebox's mkIOSTarget.
-                export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+
+                # Nix's cc-wrapper hardcodes --sysroot to a Nix-store
+                # SDK that lacks libSystem on modern macOS runners.
+                # Bypass it for host builds by pointing Cargo's host
+                # linker to the system clang, which resolves libSystem
+                # natively via xcrun.
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
               '';
             })
             // {
