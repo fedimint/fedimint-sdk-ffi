@@ -125,15 +125,26 @@
         # (`sandbox = relaxed` in nix.conf or `--option sandbox relaxed`).
         xcode-wrapper = pkgs.runCommand "xcode-wrapper-impure" { __noChroot = true; } ''
           mkdir -p $out/bin
-          ln -s /usr/bin/ld $out/bin/ld
-          ln -s /usr/bin/clang $out/bin/clang
-          ln -s /usr/bin/clang++ $out/bin/clang++
-          ln -s /usr/bin/cc $out/bin/cc
-          ln -s /usr/bin/c++ $out/bin/c++
           ln -s /usr/bin/ar $out/bin/ar
           ln -s /usr/bin/xcrun $out/bin/xcrun
           ln -s /usr/bin/xcode-select $out/bin/xcode-select
           ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
+
+          # Smart wrapper to dynamically set SDKROOT based on target arguments.
+          # Host builds (proc-macro2) will fall back to the macOS SDK,
+          # while iOS target builds will use the iPhoneOS SDK, preventing missing symbols.
+          for cmd in cc c++ clang clang++ ld; do
+            cat << EOF > $out/bin/$cmd
+          #!/usr/bin/env bash
+          if [[ " \$* " == *"apple-ios"* ]] || [[ " \$* " == *"iphoneos"* ]]; then
+            export SDKROOT=\$(/usr/bin/xcrun --sdk iphoneos --show-sdk-path)
+          else
+            export SDKROOT=\$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+          fi
+          exec /usr/bin/$cmd "\$@"
+          EOF
+            chmod +x $out/bin/$cmd
+          done
         '';
 
         # Build the crate for a single (rustTarget, targetKey) pair.
@@ -187,11 +198,6 @@
                 # against macOS's BSD tar.
                 export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
                 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-                
-                # Scope the macOS SDK explicitly to host builds so we don't break iOS target linking
-                MAC_SDK=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
-                export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-isysroot -C link-arg=$MAC_SDK"
-                export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-isysroot -C link-arg=$MAC_SDK"
               '';
             })
             // {
