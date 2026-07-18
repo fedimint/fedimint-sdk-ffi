@@ -187,6 +187,14 @@
                 # against macOS's BSD tar.
                 export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
                 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+
+                # Nix's cc-wrapper hardcodes --sysroot to a Nix-store
+                # SDK that lacks libSystem on modern macOS runners.
+                # Bypass it for host builds by pointing Cargo's host
+                # linker to the system clang, which resolves libSystem
+                # natively via xcrun.
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=/usr/bin/cc
               '';
             })
             // {
