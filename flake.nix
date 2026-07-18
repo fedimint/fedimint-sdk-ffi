@@ -126,20 +126,18 @@
         xcode-wrapper = pkgs.runCommand "xcode-wrapper-impure" { __noChroot = true; } ''
           mkdir -p $out/bin
           ln -s /usr/bin/ar $out/bin/ar
-          ln -s /usr/bin/xcrun $out/bin/xcrun
           ln -s /usr/bin/xcode-select $out/bin/xcode-select
           ln -s /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild $out/bin/xcodebuild
 
           # Smart wrapper to dynamically set SDKROOT based on target arguments.
-          # Host builds (proc-macro2) will fall back to the macOS SDK,
-          # while iOS target builds will use the iPhoneOS SDK, preventing missing symbols.
-          for cmd in cc c++ clang clang++ ld; do
+          # Flakebox sets Cargo's CC to `xcrun cc`, so we MUST wrap xcrun as well!
+          for cmd in cc c++ clang clang++ ld xcrun; do
             cat << EOF > $out/bin/$cmd
           #!/usr/bin/env bash
           if [[ " \$* " == *"apple-ios"* ]] || [[ " \$* " == *"iphoneos"* ]]; then
-            export SDKROOT=\$(/usr/bin/xcrun --sdk iphoneos --show-sdk-path)
+            export SDKROOT=\$IOS_SDK_PATH
           else
-            export SDKROOT=\$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+            export SDKROOT=\$MAC_SDK_PATH
           fi
           exec /usr/bin/$cmd "\$@"
           EOF
@@ -198,6 +196,11 @@
                 # against macOS's BSD tar.
                 export PATH=$PATH:/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin
                 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+
+                # Pre-compute SDK paths so the xcode-wrapper scripts don't
+                # spawn recursive xcrun calls.
+                export MAC_SDK_PATH=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+                export IOS_SDK_PATH=$(/usr/bin/xcrun --sdk iphoneos --show-sdk-path)
               '';
             })
             // {
