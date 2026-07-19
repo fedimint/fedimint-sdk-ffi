@@ -17,28 +17,50 @@ path = "src/lib.rs"
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
+[features]
+default = []
+uniffi = []
+tokio-multi-thread = ["tokio/rt-multi-thread"]
+
 [dependencies]
 anyhow = "1.0.98"
-# Pin aws-lc-rs to 1.15.1 / aws-lc-sys to 0.34.0 (same as Fedi).
-# aws-lc-sys v0.35.0 introduced a jitter entropy init bug: SIGSEGV on
-# aarch64-android via aws_lc_0_35_0_tree_jitter_initialize → pthread_once → [anon:.bss]
-aws-lc-rs = { version = "=1.15.1" }
-fedimint-client-rpc = { version = "0.11.1" }
-fedimint-connectors = { version = "0.11.1" }
-fedimint-core = { version = "0.11.1" }
-fedimint-db-locked = { version = "0.11.1" }
-fedimint-rocksdb = { version = "0.11.1" }
+async-stream = "0.3"
+
+
+fedimint-bip39 = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+fedimint-client = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump", features = ["uniffi"] }
+fedimint-connectors = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+fedimint-core = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+fedimint-derive-secret = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+fedimint-ln-client = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump", features = ["uniffi"] }
+fedimint-meta-client = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump", features = ["uniffi"] }
+fedimint-mint-client = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump", features = ["uniffi"] }
+fedimint-wallet-client = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump", features = ["uniffi"] }
+futures = "0.3"
+rand = "0.8"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.141"
-socket2 = { version = "0.5.7", features = ["all"] }
 thiserror = "2.0.12"
-tokio = "1.48.0"
-uniffi = { version = "0.29", features = ["cli"] }
+log = "0.4"
+tracing = "0.1"
+uniffi = { version = "0.31.1", features = ["cli", "tokio"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fedimint-rocksdb = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+socket2 = { version = "0.5.7", features = ["all"] }
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "rt-multi-thread", "fs"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+fedimint-cursed-redb = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "rt", "macros", "time", "io-util"] }
+
+[target.'cfg(target_os = "android")'.dependencies] 
+android_logger = "0.14"
 
 [build-dependencies]
 cc = "1"
-fedimint-build = { version= "0.11.1" }
-uniffi = { version = "0.29", features = ["build"] }
+fedimint-build = { git = "https://github.com/MrImmortal09/fedimint", branch = "om/major-uniffi-bump" }
+uniffi = { version = "0.31.1", features = ["build"] }
 
 [profile.release]
 opt-level = 'z'     # Optimize for size.
